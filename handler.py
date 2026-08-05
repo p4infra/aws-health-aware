@@ -185,8 +185,21 @@ def send_org_alert(event_details, affected_org_accounts, affected_org_entities, 
 
 
 def send_to_slack(message, webhookurl):
+    SLACK_WEBHOOK_MAX_BYTES = 32768
+    TRUNCATION_SUFFIX = "... [truncated]"
+
     slack_message = message
-    req = Request(webhookurl, data=json.dumps(slack_message).encode("utf-8"),
+    payload = json.dumps(slack_message).encode("utf-8")
+
+    # If payload exceeds Slack's 32KB webhook limit, find and truncate the
+    # "Updates" field (the largest variable-length content) to fit.
+    if len(payload) > SLACK_WEBHOOK_MAX_BYTES:
+        overflow = len(payload) - SLACK_WEBHOOK_MAX_BYTES
+        truncated = _truncate_slack_updates(slack_message, overflow, TRUNCATION_SUFFIX)
+        if truncated:
+            payload = json.dumps(slack_message).encode("utf-8")
+
+    req = Request(webhookurl, data=payload,
                   headers={'content-type': 'application/json'})
     try:
         response = urlopen(req)
@@ -195,6 +208,41 @@ def send_to_slack(message, webhookurl):
         print("Request failed : ", e.code, e.reason)
     except URLError as e:
         print("Server connection failed: ", e.reason, e.reason)
+
+
+def _truncate_slack_updates(message, overflow, suffix):
+    """Truncate the 'Updates' field value in-place to shed `overflow` bytes.
+    Works for both webhook format (attachments->fields) and workflow format
+    (top-level 'updates' key). Returns True if truncation was applied."""
+
+    # Webhook format: message["attachments"][0]["fields"] list with title "Updates"
+    updates_value = None
+    updates_holder = None
+    updates_key = None
+
+    if "attachments" in message:
+        for field in message.get("attachments", [{}])[0].get("fields", []):
+            if field.get("title") == "Updates":
+                updates_holder = field
+                updates_key = "value"
+                updates_value = field["value"]
+                break
+    elif "updates" in message:
+        updates_holder = message
+        updates_key = "updates"
+        updates_value = message["updates"]
+
+    if updates_value is None or updates_holder is None:
+        return False
+
+    # Calculate how much to keep — overflow is in bytes but the content is
+    # mostly ASCII so len() is a reasonable approximation; add a small buffer.
+    chars_to_remove = overflow + len(suffix) + 64  # 64-byte safety margin
+    new_length = len(updates_value) - chars_to_remove
+    if new_length < 200:
+        new_length = 200  # keep at least a meaningful snippet
+    updates_holder[updates_key] = updates_value[:new_length] + suffix
+    return True
 
 
 def send_to_chime(message, webhookurl):
