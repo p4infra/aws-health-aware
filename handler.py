@@ -184,9 +184,24 @@ def send_org_alert(event_details, affected_org_accounts, affected_org_entities, 
             pass
 
 
+SLACK_WEBHOOK_MAX_BYTES = 32768
+SLACK_MAX_RESOURCES = 10
+
+# Slack messages come in two shapes: webhook format nests values in
+# attachments->fields keyed by a display "title", workflow format puts them at
+# the top level under a plain key.
+SLACK_RESOURCES_TITLE = "Resource(s)"
+
+
 def send_to_slack(message, webhookurl):
-    slack_message = message
-    req = Request(webhookurl, data=json.dumps(slack_message).encode("utf-8"),
+    payload = json.dumps(message).encode("utf-8")
+
+    # Slack rejects payloads over 32KB, and the resource list is what blows
+    # past it — the update text is a couple of KB at worst. Cap the list.
+    if len(payload) > SLACK_WEBHOOK_MAX_BYTES and _truncate_slack_resources(message):
+        payload = json.dumps(message).encode("utf-8")
+
+    req = Request(webhookurl, data=payload,
                   headers={'content-type': 'application/json'})
     try:
         response = urlopen(req)
@@ -195,6 +210,38 @@ def send_to_slack(message, webhookurl):
         print("Request failed : ", e.code, e.reason)
     except URLError as e:
         print("Server connection failed: ", e.reason, e.reason)
+
+
+def _slack_resources_field(message):
+    """Return (holder, key) for the resource list in either Slack message
+    format, or None if the message doesn't have one."""
+    if "attachments" in message:
+        for attachment in message["attachments"]:
+            for entry in attachment.get("fields", []):
+                if entry.get("title") == SLACK_RESOURCES_TITLE:
+                    return entry, "value"
+    elif "resources" in message:
+        return message, "resources"
+    return None
+
+
+def _truncate_slack_resources(message):
+    """Collapse a resource list longer than SLACK_MAX_RESOURCES down to the
+    first few entries plus a count of what was dropped. True if changed."""
+    found = _slack_resources_field(message)
+    if not found:
+        return False
+
+    holder, key = found
+    resources = holder[key].split("\n")
+    if len(resources) <= SLACK_MAX_RESOURCES:
+        return False
+
+    omitted = len(resources) - SLACK_MAX_RESOURCES
+    resources = resources[:SLACK_MAX_RESOURCES]
+    resources.append(f"... and {omitted} more resource(s) [truncated]")
+    holder[key] = "\n".join(resources)
+    return True
 
 
 def send_to_chime(message, webhookurl):
