@@ -537,7 +537,18 @@ def _get_secret_value(client, key, secret_id):
     return response.get('SecretString', "None")
 
 
+# Cached result of get_secrets(), populated on first call. Several code paths
+# (send_alert, send_org_alert, get_sts_token, ...) call get_secrets() per
+# invocation, but the values don't change within a single Lambda invocation,
+# so we only want to hit Secrets Manager once.
+_secrets_cache = None
+
+
 def get_secrets():
+    global _secrets_cache
+    if _secrets_cache is not None:
+        return _secrets_cache
+
     region_name = os.environ['AWS_REGION']
 
     # create a Secrets Manager client
@@ -553,6 +564,7 @@ def get_secrets():
     }
     # uncomment below to verify secrets values
     #print("Secrets: ",secrets)
+    _secrets_cache = secrets
     return secrets
 
 def skip_health_code(codes, arn):
