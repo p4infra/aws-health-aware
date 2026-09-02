@@ -45,12 +45,12 @@ def get_account_name(account_id):
     return account_name
 
 def send_alert(event_details, affected_accounts, affected_entities, event_type):
-    slack_url = get_secrets()["slack"]
-    teams_url = get_secrets()["teams"]
-    chime_url = get_secrets()["chime"]
+    slack_url = get_secret("slack")
+    teams_url = get_secret("teams")
+    chime_url = get_secret("chime")
     SENDER = os.environ['FROM_EMAIL']
     RECIPIENT = os.environ['TO_EMAIL']
-    event_bus_name = get_secrets()["eventbusname"]
+    event_bus_name = get_secret("eventbusname")
 
     if "None" not in event_bus_name:
         try:
@@ -109,12 +109,12 @@ def send_alert(event_details, affected_accounts, affected_entities, event_type):
             pass
 
 def send_org_alert(event_details, affected_org_accounts, affected_org_entities, event_type):
-    slack_url = get_secrets()["slack"]
-    teams_url = get_secrets()["teams"]
-    chime_url = get_secrets()["chime"]
+    slack_url = get_secret("slack")
+    teams_url = get_secret("teams")
+    chime_url = get_secret("chime")
     SENDER = os.environ['FROM_EMAIL']
     RECIPIENT = os.environ['TO_EMAIL']
-    event_bus_name = get_secrets()["eventbusname"]
+    event_bus_name = get_secret("eventbusname")
 
     if "None" not in event_bus_name:
         try:
@@ -537,35 +537,32 @@ def _get_secret_value(client, key, secret_id):
     return response.get('SecretString', "None")
 
 
-# Cached result of get_secrets(), populated on first call. Several code paths
-# (send_alert, send_org_alert, get_sts_token, ...) call get_secrets() per
+# Cached result of get_secret(), populated on first call. Several code paths
+# (send_alert, send_org_alert, get_sts_token, ...) call get_secret() per
 # invocation, but the values don't change within a single Lambda invocation,
 # so we only want to hit Secrets Manager once.
 _secrets_cache = None
 
-
-def get_secrets():
+def get_secret(name: str):
     global _secrets_cache
-    if _secrets_cache is not None:
-        return _secrets_cache
+    if _secrets_cache is None:
+        region_name = os.environ['AWS_REGION']
 
-    region_name = os.environ['AWS_REGION']
+        # create a Secrets Manager client
+        session = boto3.session.Session()
+        client = session.client(
+            service_name='secretsmanager',
+            region_name=region_name
+        )
+        # Iteration through the configured AWS Secrets
+        _secrets_cache = {
+            key: _get_secret_value(client, key, secret_id)
+            for key, secret_id in SECRET_DEFINITIONS.items()
+        }
+        # uncomment below to verify secrets values
+        #print("Secrets: ",_secrets_cache)
 
-    # create a Secrets Manager client
-    session = boto3.session.Session()
-    client = session.client(
-        service_name='secretsmanager',
-        region_name=region_name
-    )
-    # Iteration through the configured AWS Secrets
-    secrets = {
-        key: _get_secret_value(client, key, secret_id)
-        for key, secret_id in SECRET_DEFINITIONS.items()
-    }
-    # uncomment below to verify secrets values
-    #print("Secrets: ",secrets)
-    _secrets_cache = secrets
-    return secrets
+    return _secrets_cache[name]
 
 def skip_health_code(codes, arn):
     for c in codes:
@@ -779,7 +776,7 @@ def getAccountIDs():
     return account_ids
 
 def get_sts_token(service):
-    assumeRoleArn = get_secrets()["ahaassumerole"]
+    assumeRoleArn = get_secret("ahaassumerole")
     boto3_client = None
 
     if "arn:aws:iam::" in assumeRoleArn:
