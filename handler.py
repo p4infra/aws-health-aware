@@ -45,12 +45,12 @@ def get_account_name(account_id):
     return account_name
 
 def send_alert(event_details, affected_accounts, affected_entities, event_type):
-    slack_url = get_secrets()["slack"]
-    teams_url = get_secrets()["teams"]
-    chime_url = get_secrets()["chime"]
+    slack_url = get_secret("slack")
+    teams_url = get_secret("teams")
+    chime_url = get_secret("chime")
     SENDER = os.environ['FROM_EMAIL']
     RECIPIENT = os.environ['TO_EMAIL']
-    event_bus_name = get_secrets()["eventbusname"]
+    event_bus_name = get_secret("eventbusname")
 
     if "None" not in event_bus_name:
         try:
@@ -109,12 +109,12 @@ def send_alert(event_details, affected_accounts, affected_entities, event_type):
             pass
 
 def send_org_alert(event_details, affected_org_accounts, affected_org_entities, event_type):
-    slack_url = get_secrets()["slack"]
-    teams_url = get_secrets()["teams"]
-    chime_url = get_secrets()["chime"]
+    slack_url = get_secret("slack")
+    teams_url = get_secret("teams")
+    chime_url = get_secret("chime")
     SENDER = os.environ['FROM_EMAIL']
     RECIPIENT = os.environ['TO_EMAIL']
-    event_bus_name = get_secrets()["eventbusname"]
+    event_bus_name = get_secret("eventbusname")
 
     if "None" not in event_bus_name:
         try:
@@ -560,116 +560,56 @@ def update_ddb(event_arn, str_update, status_code, event_details, affected_accou
             else:
                 print("No new updates found, checking again in 1 minute.")
 
-def get_secrets():
-    secret_teams_name = "MicrosoftChannelID"
-    secret_slack_name = "SlackChannelID"
-    secret_chime_name = "ChimeChannelID"
-    region_name = os.environ['AWS_REGION']
-    get_secret_value_response_assumerole = ""
-    get_secret_value_response_eventbus = ""
-    get_secret_value_response_chime = ""
-    get_secret_value_response_teams = ""
-    get_secret_value_response_slack = ""
-    event_bus_name = "EventBusName"
-    secret_assumerole_name = "AssumeRoleArn"
+# Maps our internal secrets dict key -> the Secrets Manager SecretId to fetch
+SECRET_DEFINITIONS = {
+    "teams": "MicrosoftChannelID",
+    "slack": "SlackChannelID",
+    "chime": "ChimeChannelID",
+    "eventbusname": "EventBusName",
+    "ahaassumerole": "AssumeRoleArn",
+}
 
-    # create a Secrets Manager client
-    session = boto3.session.Session()
-    client = session.client(
-        service_name='secretsmanager',
-        region_name=region_name
-    )
-    # Iteration through the configured AWS Secrets
+
+def _get_secret_value(client, key, secret_id):
+    """Fetch a single secret, falling back to "None" if it's not configured
+    or the call fails."""
     try:
-        get_secret_value_response_teams = client.get_secret_value(
-            SecretId=secret_teams_name
-        )
+        response = client.get_secret_value(SecretId=secret_id)
     except ClientError as e:
         if e.response['Error']['Code'] == 'AccessDeniedException':
-            print("No AWS Secret configured for Teams, skipping")
-            teams_channel_id = "None"
+            print(f"No AWS Secret configured for {key}, skipping")
         else:
-            print("There was an error with the Teams secret: ",e.response)
-            teams_channel_id = "None"
-    finally:
-        if 'SecretString' in get_secret_value_response_teams:
-            teams_channel_id = get_secret_value_response_teams['SecretString']
-        else:
-            teams_channel_id = "None"
-    try:
-        get_secret_value_response_slack = client.get_secret_value(
-            SecretId=secret_slack_name
+            print(f"There was an error with the {key} secret: ", e.response)
+        return "None"
+    return response.get('SecretString', "None")
+
+
+# Cached result of get_secret(), populated on first call. Several code paths
+# (send_alert, send_org_alert, get_sts_token, ...) call get_secret() per
+# invocation, but the values don't change within a single Lambda invocation,
+# so we only want to hit Secrets Manager once.
+_secrets_cache = None
+
+def get_secret(name: str):
+    global _secrets_cache
+    if _secrets_cache is None:
+        region_name = os.environ['AWS_REGION']
+
+        # create a Secrets Manager client
+        session = boto3.session.Session()
+        client = session.client(
+            service_name='secretsmanager',
+            region_name=region_name
         )
-    except ClientError as e:
-        if e.response['Error']['Code'] == 'AccessDeniedException':
-            print("No AWS Secret configured for Slack, skipping")
-            slack_channel_id = "None"
-        else:
-            print("There was an error with the Slack secret: ",e.response)
-            slack_channel_id = "None"
-    finally:
-        if 'SecretString' in get_secret_value_response_slack:
-            slack_channel_id = get_secret_value_response_slack['SecretString']
-        else:
-            slack_channel_id = "None"
-    try:
-        get_secret_value_response_chime = client.get_secret_value(
-            SecretId=secret_chime_name
-        )
-    except ClientError as e:
-        if e.response['Error']['Code'] == 'AccessDeniedException':
-            print("No AWS Secret configured for Chime, skipping")
-            chime_channel_id = "None"
-        else:
-            print("There was an error with the Chime secret: ",e.response)
-            chime_channel_id = "None"
-    finally:
-        if 'SecretString' in get_secret_value_response_chime:
-            chime_channel_id = get_secret_value_response_chime['SecretString']
-        else:
-            chime_channel_id = "None"
-    try:
-        get_secret_value_response_assumerole = client.get_secret_value(
-            SecretId=secret_assumerole_name
-        )
-    except ClientError as e:
-        if e.response['Error']['Code'] == 'AccessDeniedException':
-            print("No AWS Secret configured for Assume Role, skipping")
-            assumerole_channel_id = "None"
-        else:
-            print("There was an error with the Assume Role secret: ",e.response)
-            assumerole_channel_id = "None"
-    finally:
-        if 'SecretString' in get_secret_value_response_assumerole:
-            assumerole_channel_id = get_secret_value_response_assumerole['SecretString']
-        else:
-            assumerole_channel_id = "None"
-    try:
-        get_secret_value_response_eventbus = client.get_secret_value(
-            SecretId=event_bus_name
-        )
-    except ClientError as e:
-        if e.response['Error']['Code'] == 'AccessDeniedException':
-            print("No AWS Secret configured for EventBridge, skipping")
-            eventbus_channel_id = "None"
-        else:
-            print("There was an error with the EventBridge secret: ",e.response)
-            eventbus_channel_id = "None"
-    finally:
-        if 'SecretString' in get_secret_value_response_eventbus:
-            eventbus_channel_id = get_secret_value_response_eventbus['SecretString']
-        else:
-            eventbus_channel_id = "None"
-        secrets = {
-            "teams": teams_channel_id,
-            "slack": slack_channel_id,
-            "chime": chime_channel_id,
-            "eventbusname": eventbus_channel_id,
-            "ahaassumerole": assumerole_channel_id
+        # Iteration through the configured AWS Secrets
+        _secrets_cache = {
+            key: _get_secret_value(client, key, secret_id)
+            for key, secret_id in SECRET_DEFINITIONS.items()
         }
         # uncomment below to verify secrets values
-        #print("Secrets: ",secrets)
-    return secrets
+        #print("Secrets: ",_secrets_cache)
+
+    return _secrets_cache[name]
 
 def skip_health_code(codes, arn):
     for c in codes:
@@ -883,7 +823,7 @@ def getAccountIDs():
     return account_ids
 
 def get_sts_token(service):
-    assumeRoleArn = get_secrets()["ahaassumerole"]
+    assumeRoleArn = get_secret("ahaassumerole")
     boto3_client = None
 
     if "arn:aws:iam::" in assumeRoleArn:
